@@ -34,6 +34,8 @@ export interface WorkerRecord {
   killReason?: string;
   keepUntil?: string;
   askedAt?: string;
+  difficulty?: 1 | 2 | 3 | 4;
+  recordedAt?: string;
 }
 
 export interface WarningRecord {

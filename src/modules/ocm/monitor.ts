@@ -30,7 +30,10 @@ export type MonitorEventKind =
   | "done"
   | "failed"
   | "died"
-  | "stalled";
+  | "stalled"
+  | "reap_ask"
+  | "reaped"
+  | "orphan";
 
 export interface MonitorEvent {
   seq: number;
