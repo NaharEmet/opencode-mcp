@@ -45,6 +45,9 @@ const graceMs = (): number => envMs("OCM_REAP_GRACE_MS", 900_000);
 /** Idleness that counts a worker as unused. */
 const idleLimitMs = (): number => envMs("OCM_REAP_IDLE_MS", 900_000);
 
+/** Untracked `opencode run` processes may belong to another live session: kill only on opt-in. */
+const reapOrphans = (): boolean => process.env.OCM_REAP_ORPHANS === "kill";
+
 /** `1h12m` style duration for ask and kill messages. */
 function fmtDuration(ms: number): string {
   const totalMin = Math.floor(ms / 60_000);
@@ -158,6 +161,7 @@ async function stepWorker(
     log.info("reaper.already_exited", { worker: worker.id, pid: worker.pid });
     return;
   }
+  if (worker.state === "orphan" && !reapOrphans()) return;
   const askedMs = worker.askedAt === undefined ? null : Date.parse(worker.askedAt);
   if (askedMs !== null && nowMs - askedMs < graceMs()) return;
   const idleMs = nowMs - Date.parse(worker.lastActivityAt ?? worker.startedAt);

@@ -154,6 +154,7 @@ afterEach(() => {
     "OCM_REAP_AFTER_MS",
     "OCM_REAP_GRACE_MS",
     "OCM_REAP_IDLE_MS",
+    "OCM_REAP_ORPHANS",
     "FAKE_PS_MODE",
     "FAKE_PPID",
     "FAKE_PID",
@@ -291,7 +292,22 @@ describe("reapStep", () => {
     expect(loadState().workers.w1?.state).toBe("running");
   });
 
-  it("kills an orphan past grace even with fresh activity", async () => {
+  it("leaves an orphan alone by default: it may belong to another live session", async () => {
+    upsertWorker(
+      fixture("w1", {
+        state: "orphan",
+        askedAt: new Date(T0 - 20 * 60_000).toISOString(),
+      }),
+    );
+    const { deps, emits, killed } = fakeDeps();
+    await reapStep(deps, NOW);
+    expect(killed).toEqual([]);
+    expect(emits).toEqual([]);
+    expect(loadState().workers.w1?.state).toBe("orphan");
+  });
+
+  it("kills an orphan past grace even with fresh activity when OCM_REAP_ORPHANS=kill", async () => {
+    process.env.OCM_REAP_ORPHANS = "kill";
     upsertWorker(
       fixture("w1", {
         state: "orphan",
