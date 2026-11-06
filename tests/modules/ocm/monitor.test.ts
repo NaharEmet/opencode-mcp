@@ -382,7 +382,7 @@ describe("sweep", () => {
     expect(record.state).toBe("failed");
     expect(record.endedAt).toBeTypeOf("string");
     expect(record.exitCode).toBeUndefined();
-    expect(eventsFor("sw3").map((e) => e.kind)).toEqual(["first_response", "started", "died"]);
+    expect(eventsFor("sw3").map((e) => e.kind)).toEqual(["started", "first_response", "died"]);
   });
 
   it("appends died without detail when the output and stderr are empty", async () => {
@@ -482,7 +482,8 @@ describe("sweep", () => {
     });
     sweep();
     expect(readStateWorker("rc1")).toBeUndefined();
-    expect(readEvents()).toEqual([]);
+    // started is announced up front, before the other writer's delete lands
+    expect(readEvents().map((e) => e.kind)).toEqual(["started"]);
   });
 
   it("does not finish a record another writer finalized", async () => {
@@ -539,7 +540,7 @@ describe("sweep", () => {
     expect((readStateWorker("rc5") as WorkerRecord).state).toBe("running");
     expect((readStateWorker("rc4") as WorkerRecord).state).toBe("orphan");
     expect(eventsFor("rc4")).toEqual([]);
-    expect(eventsFor("rc5")).toEqual([]);
+    expect(eventsFor("rc5").map((e) => e.kind)).toEqual(["started"]);
   });
 });
 
@@ -672,6 +673,6 @@ describe("waitForEvents", () => {
     const found = await waitForEvents({ owner: "ghost", waitMs: 200, pollMs: 60 });
     expect(found).toEqual([]);
     expect(Date.now() - started).toBeGreaterThanOrEqual(190);
-    expect(eventsFor("wv3").map((e) => e.kind)).toEqual(["first_response", "started"]);
+    expect(eventsFor("wv3").map((e) => e.kind)).toEqual(["started", "first_response"]);
   });
 });

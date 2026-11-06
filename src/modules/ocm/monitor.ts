@@ -360,6 +360,10 @@ export function sweep(now: Date = new Date()): void {
   for (const worker of Object.values(loadState().workers)) {
     if (worker.state !== "running" && worker.state !== "stalled") continue;
     if (worker.state === "stalled") preSize.set(worker.id, outSize(worker.id));
+    // announce the start before ingest can append first_response or limit events
+    if (worker.state === "running" && !hasEvent("started", worker.id)) {
+      appendEvent({ worker: worker.id, owner: worker.owner, kind: "started" }, now);
+    }
     ingestWorker(worker.id, now);
   }
   const state = loadState();
@@ -370,9 +374,6 @@ export function sweep(now: Date = new Date()): void {
   for (const worker of Object.values(state.workers)) {
     if (worker.state === "running") {
       running++;
-      if (!hasEvent("started", worker.id)) {
-        appendEvent({ worker: worker.id, owner: worker.owner, kind: "started" }, now);
-      }
       if (!alive(worker.pid)) {
         finished++;
         finalizeDead(worker.id, worker.owner, now);
