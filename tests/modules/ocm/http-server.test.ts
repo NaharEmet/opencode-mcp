@@ -156,9 +156,47 @@ describe("ensureToken", () => {
 
   it("returns trimmed existing contents unchanged", () => {
     const path = join(dir, "seeded");
-    writeFileSync(path, "  abc\n", { mode: 0o600 });
-    expect(ensureToken(path)).toBe("abc");
+    writeFileSync(path, "  a-hand-set-token-1234\n", { mode: 0o600 });
+    expect(ensureToken(path)).toBe("a-hand-set-token-1234");
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it("never accepts an empty or tiny token file as the credential", () => {
+    for (const [name, body] of [
+      ["empty", ""],
+      ["blank", "  \n"],
+      ["tiny", "abc"],
+    ] as const) {
+      const path = join(dir, name);
+      writeFileSync(path, body, { mode: 0o600 });
+      const token = ensureToken(path);
+      expect(token).toMatch(/^[0-9a-f]{64}$/u);
+      expect(readFileSync(path, "utf8")).toBe(token);
+    }
+  });
+
+  it("rejects `Bearer ` with nothing after it even if the token file was empty", async () => {
+    const tokenPath = join(dir, "emptied");
+    writeFileSync(tokenPath, "", { mode: 0o600 });
+    const server = await startHttpServer({
+      port: 0,
+      tokenPath,
+      actionShape: { action: z.string() },
+      handleAction: async () => ({ ok: true }),
+      tick: async () => {},
+      version: "t",
+      instructions: "t",
+    });
+    try {
+      const res = await fetch(`${server.url}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer ", "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(res.status).toBe(401);
+    } finally {
+      await server.close();
+    }
   });
 });
 

@@ -19,6 +19,7 @@ const logger = createLogger({ module: "ocm.http-server" });
 const MAX_BODY_BYTES = 1024 * 1024;
 const VERSION = "1.3.1";
 const BEARER_PREFIX = "Bearer ";
+const MIN_TOKEN_CHARS = 16;
 const TOOL_DESCRIPTION =
   "Dispatch a worker action and always pass your manager name; covers run, ps, events, restart, pick, budget, verdict and logs.";
 
@@ -43,7 +44,12 @@ export interface RunningServer {
 
 /** Read the bearer token from path; missing tokens are created as a 32-byte hex string (0600 file). */
 export function ensureToken(path: string): string {
-  if (existsSync(path)) return readFileSync(path, "utf8").trim();
+  // an empty or tiny token file must never become the credential: "Bearer " would match it
+  if (existsSync(path)) {
+    const existing = readFileSync(path, "utf8").trim();
+    if (existing.length >= MIN_TOKEN_CHARS) return existing;
+    logger.warn("server.token_regenerated", { path, reason: "existing token too short" });
+  }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("hex");
   writeFileSync(path, token, { mode: 0o600 });
