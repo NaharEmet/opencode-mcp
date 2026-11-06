@@ -23,6 +23,7 @@ export interface LaunchRequest {
   model: string;
   prompt: string;
   ticket?: string;
+  session?: string;
 }
 
 /** Spawn handle for a worker whose output lives under the state logs. */
@@ -109,8 +110,19 @@ export async function launchWorker(req: LaunchRequest): Promise<LaunchResult> {
   const outFd = openSync(pendingOut, "a");
   const errFd = openSync(pendingErr, "a");
   const bin = process.env.OCM_OPENCODE_BIN ?? "opencode";
+  // resumed workers carry --session so the replacement continues the prior session
+  const argv = [
+    "run",
+    "-m",
+    model,
+    "--auto",
+    "--format",
+    "json",
+    ...(req.session === undefined ? [] : ["--session", req.session]),
+    req.prompt,
+  ];
   // never pass --dir: opencode 2.2.5 rejects it; req.cwd pins the directory
-  const child = spawn(bin, ["run", "-m", model, "--auto", "--format", "json", req.prompt], {
+  const child = spawn(bin, argv, {
     cwd: req.cwd,
     detached: true,
     stdio: ["ignore", outFd, errFd],
@@ -145,6 +157,7 @@ export async function launchWorker(req: LaunchRequest): Promise<LaunchResult> {
     ticket: req.ticket,
     model,
     cwd: req.cwd,
+    session: req.session,
     startedAt: new Date().toISOString(),
     state: "running",
   });
@@ -154,6 +167,7 @@ export async function launchWorker(req: LaunchRequest): Promise<LaunchResult> {
     pid,
     owner: req.owner,
     ticket: req.ticket,
+    session: req.session,
     model,
     cwd: req.cwd,
     argv: [
@@ -163,6 +177,7 @@ export async function launchWorker(req: LaunchRequest): Promise<LaunchResult> {
       "--auto",
       "--format",
       "json",
+      ...(req.session === undefined ? [] : ["--session", req.session]),
       `${req.prompt.length} chars starting ${JSON.stringify(req.prompt.slice(0, 120))}`,
     ],
     outPath,

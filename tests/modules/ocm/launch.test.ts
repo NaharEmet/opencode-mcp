@@ -171,6 +171,15 @@ describe("launchWorker spawn", () => {
     expect(readFileSync(result.outPath, "utf8")).toContain('"-m","openai/x"');
   });
 
+  it("passes --session into the argv and records it on the worker", async () => {
+    const result = await launchWorker(req({ session: "ses_prev", cwd: root }));
+    expect(record(result.id)?.session).toBe("ses_prev");
+    await until("state done", () => record(result.id)?.state === "done");
+    await until("stdout has argv", () => readFileSync(result.outPath, "utf8").length > 0);
+    const args = JSON.parse(readFileSync(result.outPath, "utf8")) as string[];
+    expect(args).toEqual([...OK_ARGS.slice(0, 6), "--session", "ses_prev", "do the ticket"]);
+  });
+
   it("maps a nonzero exit to failed and logs the exit at warn", async () => {
     process.env.FAKE_EXIT = "3";
     const result = await launchWorker(req());
