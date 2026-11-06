@@ -7,9 +7,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
+  DEFAULT_PORT,
   ensureToken,
   type HttpServerOptions,
   main,
+  portFrom,
   type RunningServer,
   serverInstructions,
   startHttpServer,
@@ -453,15 +455,20 @@ describe("startHttpServer", () => {
 });
 
 describe("main", () => {
+  it("defaults the port to 7357 unless OCM_PORT is set", () => {
+    expect(portFrom({})).toBe(DEFAULT_PORT);
+    expect(portFrom({ OCM_PORT: "8123" })).toBe(8123);
+  });
+
   it("uses process.env defaults for port, host and token path", async () => {
     const handlers = captureHandlers();
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    delete process.env.OCM_PORT;
+    process.env.OCM_PORT = "0";
     delete process.env.OCM_HOST;
     delete process.env.OCM_TOKEN_PATH;
     running = await main();
     const tokenPath = join(dir, ".config", "opencode-worker-server", "token");
-    expect(running.port).toBe(7357);
+    expect(DEFAULT_PORT).toBe(7357);
     expect(running.url).toBe(`http://127.0.0.1:${running.port}`);
     expect(existsSync(tokenPath)).toBe(true);
     const started = entry("server.started");

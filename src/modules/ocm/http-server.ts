@@ -23,6 +23,14 @@ const MIN_TOKEN_CHARS = 16;
 const TOOL_DESCRIPTION =
   "Dispatch a worker action and always pass your manager name; covers run, ps, events, restart, pick, budget, verdict and logs.";
 
+/** Port the server listens on unless OCM_PORT overrides it. */
+export const DEFAULT_PORT = 7357;
+
+/** Listening port from OCM_PORT, else the default. */
+export function portFrom(env: NodeJS.ProcessEnv): number {
+  return env.OCM_PORT ? Number.parseInt(env.OCM_PORT, 10) : DEFAULT_PORT;
+}
+
 export interface HttpServerOptions {
   port: number;
   host?: string;
@@ -304,7 +312,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<Runnin
   const tokenPath =
     env.OCM_TOKEN_PATH ?? join(homedir(), ".config", "opencode-worker-server", "token");
   const running = await startHttpServer({
-    port: env.OCM_PORT ? Number.parseInt(env.OCM_PORT, 10) : 7357,
+    port: portFrom(env),
     host: env.OCM_HOST,
     tokenPath,
     actionShape,
