@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaunchRequest } from "../../../src/modules/ocm/launch.js";
 import { allowedRoot, launchWorker, workerOutPath } from "../../../src/modules/ocm/launch.js";
 import type { LogEntry } from "../../../src/modules/ocm/log.js";
@@ -224,5 +224,15 @@ describe("launchWorker spawn", () => {
     const args = JSON.parse(readFileSync(result.outPath, "utf8")) as string[];
     expect(args.slice(-5)).toEqual(OK_ARGS.slice(-5));
     expect(args).not.toContain("--dir");
+  });
+});
+
+describe("concurrent launches", () => {
+  it("do not share capture files when started in the same millisecond", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const [a, b] = await Promise.all([launchWorker(req()), launchWorker(req())]);
+    now.mockRestore();
+    expect(a.outPath).not.toBe(b.outPath);
+    expect(a.id).not.toBe(b.id);
   });
 });

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -102,10 +103,12 @@ export async function launchWorker(req: LaunchRequest): Promise<LaunchResult> {
   // The id embeds the pid, which only exists after spawn, so capture into
   // pending files first; an append fd keeps writing to the inode through the
   // rename to the final `<id>.*` names.
+  // random suffix: two launches in the same millisecond must not share pending files
+  const pendingKey = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
   const ts36 = Date.now().toString(36);
   mkdirSync(workersDir(), { recursive: true });
-  const pendingOut = join(workersDir(), `${ts36}.pending.out.jsonl`);
-  const pendingErr = join(workersDir(), `${ts36}.pending.err.log`);
+  const pendingOut = join(workersDir(), `${pendingKey}.pending.out.jsonl`);
+  const pendingErr = join(workersDir(), `${pendingKey}.pending.err.log`);
   const outFd = openSync(pendingOut, "a");
   const errFd = openSync(pendingErr, "a");
   const bin = process.env.OCM_OPENCODE_BIN ?? "opencode";
