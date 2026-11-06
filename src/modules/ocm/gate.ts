@@ -1,6 +1,5 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { currentBlocks, type ModelBlock, scanLog } from "./limits.js";
+import { collectHits } from "./evidence.js";
+import { currentBlocks, type ModelBlock } from "./limits.js";
 import { createLogger } from "./log.js";
 import { loadState, markCleared, recordWarning, takeWarning } from "./state.js";
 
@@ -60,10 +59,8 @@ export function checkLaunch(
   // Resolved per call so tests can point HOME/OCM_LIMIT_MODE at a fixture.
   const now = opts.now ?? new Date();
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
-  const logPath =
-    opts.logPath ?? join(homedir(), ".local", "share", "opencode", "log", "opencode.log");
   const mode = opts.mode ?? limitMode();
-  const hits = scanLog(logPath, { sinceMs: 7 * DAY_MS });
+  const hits = collectHits({ logPath: opts.logPath, sinceMs: 7 * DAY_MS, now });
   const block = currentBlocks(hits, now, loadState().cleared).find(
     (b) => `${b.provider}/${b.model}` === model,
   );

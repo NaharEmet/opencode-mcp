@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   markModelWorking,
 } from "../../../src/modules/ocm/gate.js";
 import { readLogs } from "../../../src/modules/ocm/log.js";
+import { upsertWorker, type WorkerRecord } from "../../../src/modules/ocm/state.js";
 
 const MODEL = "zai-coding-plan/glm-5.3-flash";
 const DAY_MS = 86_400_000;
@@ -194,5 +195,78 @@ describe("checkLaunch", () => {
       now: new Date(Date.now() + DAY_MS),
     });
     expect(late.action).toBe("warn");
+  });
+});
+
+const STEP_START_EVENT =
+  '{"type":"step_start","timestamp":1793989301108,"sessionID":"ses_e4de7b333ffehtj1J774fjIhKK","part":{}}';
+const FREE_LIMIT_EVENT =
+  '{"type":"error","timestamp":1793989303016,"sessionID":"ses_e4de7b333ffehtj1J774fjIhKK",' +
+  '"error":{"type":"provider.free-limit","message":"Free usage limit reached. Connect a ' +
+  'provider or subscribe to OpenCode Go to keep going, or switch models.","status":429,' +
+  '"retryAfterMs":20313000}}';
+const SESSION_LINE =
+  "timestamp=2026-11-06T18:30:33.373Z level=ERROR run=c395a701 " +
+  'message="Failed to drain Session" cause="AI.Error: Weekly/Monthly Limit Exhausted. ' +
+  "Your limit will reset at 2026-11-10 02:02:55\\n    at Rae (/$bunfs/root/chunk-ek0q9z0p.js:3:3633)\\n" +
+  '  [cause]: AI.Error.QuotaExceeded: Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-10 02:02:55\\n}" ' +
+  "role=server sessionID=ses_e4de7b36bffeGj9tzvdxjKmhOH";
+
+function worker(over: Partial<WorkerRecord> = {}): WorkerRecord {
+  return {
+    id: "w1",
+    pid: 1,
+    owner: "o",
+    // a model older tests never cleared/saved, so state pollution can't bite
+    model: "zai-coding-plan/glm-4.5-air",
+    cwd: dir,
+    startedAt: "2026-11-06T09:00:00.000Z",
+    state: "running",
+    ...over,
+  };
+}
+
+describe("checkLaunch worker and session evidence", () => {
+  // a model no older test cleared/warned on, so state pollution can't bite
+  const ALT = "zai-coding-plan/glm-4.5-air";
+
+  it("warns from a worker .out.jsonl error event", () => {
+    upsertWorker(worker({ id: "w1" }));
+    mkdirSync(join(dir, "logs", "workers"), { recursive: true });
+    writeFileSync(
+      join(dir, "logs", "workers", "w1.out.jsonl"),
+      `${STEP_START_EVENT}\n${FREE_LIMIT_EVENT}\n`,
+    );
+    // now sits after the 18:21:43 event but before its 2026-11-07T00:00:16 reset
+    const result = checkLaunch("m1", ALT, { now: new Date("2026-11-06T19:00:00.000Z"), logPath });
+    expect(result.action).toBe("warn");
+    expect(result.block).toMatchObject({
+      provider: "zai-coding-plan",
+      model: "glm-4.5-air",
+      kind: "free_usage",
+      resetAt: new Date(1793989303016 + 20313000).toISOString(),
+    });
+    expect(decision()).toEqual([expect.objectContaining({ action: "warn", kind: "free_usage" })]);
+  });
+
+  it("warns from a session-keyed log line for a seeded worker session", () => {
+    upsertWorker(
+      worker({
+        id: "w2",
+        model: ALT,
+        session: "ses_e4de7b36bffeGj9tzvdxjKmhOH",
+        startedAt: "2026-11-06T09:00:00.000Z",
+      }),
+    );
+    writeFileSync(logPath, `${SESSION_LINE}\n`);
+    const result = checkLaunch("m1", ALT, { now: new Date("2026-11-07T12:00:00.000Z"), logPath });
+    expect(result).toMatchObject({
+      action: "warn",
+      block: { kind: "weekly_monthly", resetAt: "2026-11-09T18:02:55.000Z" },
+    });
+    expect(result.message).toBe(
+      "WARNING zai-coding-plan/glm-4.5-air: limited until 2026-11-09 18:02Z " +
+        "(weekly/monthly limit). Repeat the same run within 10 minutes to launch anyway.",
+    );
   });
 });
