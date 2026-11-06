@@ -753,3 +753,49 @@ describe("garbage input", () => {
     spy.mockRestore();
   });
 });
+
+describe("ownership of destructive actions", () => {
+  it("refuses restart, keep and release on another manager's worker", async () => {
+    upsertWorker(rec("o1", MODEL, { owner: "nora" }));
+    for (const action of ["restart", "keep", "release"] as const) {
+      const res = await call({ action, worker: "o1" });
+      expect(res).toMatchObject({ ok: false, status: "refused_owner" });
+      expect(String(res.error)).toContain("belongs to nora");
+    }
+    expect(loadState().workers.o1).toMatchObject({ state: "running" });
+    expect(loadState().workers.o1?.keepUntil).toBeUndefined();
+  });
+
+  it("allows them with all:true, and keep/release on orphans without it", async () => {
+    upsertWorker(rec("o2", MODEL, { owner: "nora" }));
+    expect((await call({ action: "keep", worker: "o2", all: true })).ok).toBe(true);
+    upsertWorker(rec("o3", MODEL, { owner: "orphan" }));
+    expect((await call({ action: "keep", worker: "o3" })).ok).toBe(true);
+    expect((await call({ action: "release", worker: "o3" })).ok).toBe(true);
+    expect(loadState().workers.o3?.state).toBe("killed");
+  });
+});
+
+describe("restart with nothing to switch to", () => {
+  it("leaves a live worker running instead of killing it", async () => {
+    process.env.OCM_OPENCODE_BIN = bin("slow2", SLOW);
+    const live = await launchWorker({ owner: "maya", cwd: root, model: MODEL, prompt: "do t9" });
+    await until("worker running", () => loadState().workers[live.id]?.state === "running");
+    const res = await call({ action: "restart", worker: live.id });
+    expect(res).toEqual({ ok: false, error: "no replacement model available" });
+    expect(() => process.kill(live.pid, 0)).not.toThrow();
+    expect(loadState().workers[live.id]?.state).toBe("running");
+    process.kill(live.pid, "SIGKILL");
+  });
+});
+
+describe("running counts", () => {
+  it("count several running workers on one model when ranking picks", async () => {
+    importPolicy(tiersOnlyDoc([tierRow(MODEL, "fast", "strong", 3, "1 pass / 0 strike")]));
+    upsertWorker(rec("c1", MODEL));
+    upsertWorker(rec("c2", MODEL));
+    const res = await call({ action: "pick", difficulty: 2 });
+    expect(res.ok).toBe(true);
+    expect((res.picks as { id: string }[]).map((p) => p.id)).toEqual([MODEL]);
+  });
+});

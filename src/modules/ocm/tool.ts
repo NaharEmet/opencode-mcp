@@ -158,10 +158,12 @@ function blockedModels(): string[] {
 }
 
 /** Count of running workers per model, as pick() expects. */
-function runningCounts(): Record<string, number> {
+function runningCounts(except?: string): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const worker of Object.values(loadState().workers)) {
-    if (worker.state === "running") counts[worker.model] = (counts[worker.model] ?? 0) + 1;
+    if (worker.state === "running" && worker.id !== except) {
+      counts[worker.model] = (counts[worker.model] ?? 0) + 1;
+    }
   }
   return counts;
 }
@@ -276,7 +278,7 @@ async function validateThenRun(req: Req, action: string): Promise<ActionResult> 
     case "result":
       return resultAction(req);
     case "restart":
-      return restartAction(req);
+      return ownerGuard(req) ?? restartAction(req);
     case "budget":
       return budgetAction();
     case "pick":
@@ -293,12 +295,18 @@ async function validateThenRun(req: Req, action: string): Promise<ActionResult> 
           limit: num(req.limit),
         }),
       };
-    case "keep":
+    case "keep": {
+      const refused = ownerGuard(req);
+      if (refused) return refused;
       keepWorker(str(req.worker), num(req.for_ms));
       return { ok: true };
-    case "release":
+    }
+    case "release": {
+      const refused = ownerGuard(req);
+      if (refused) return refused;
       await releaseWorker(str(req.worker), reaperDeps());
       return { ok: true };
+    }
     case "ledger":
       return ledgerAction(req);
     case "health":
@@ -388,6 +396,22 @@ function resultAction(req: Req): ActionResult {
   return { ok: true, ...result, usage: usageFromOutput(workerOutPath(worker)) };
 }
 
+/**
+ * Acting on another manager's worker needs all:true. Orphans belong to nobody, so any
+ * manager may keep or release them. Unknown ids fall through to the action's own error.
+ */
+function ownerGuard(req: Req): ActionResult | undefined {
+  const record = loadState().workers[str(req.worker)];
+  if (record === undefined || req.all === true) return undefined;
+  if (record.owner === str(req.manager) || record.owner === "orphan") return undefined;
+  logger.warn("tool.not_owner", { worker: record.id, owner: record.owner, manager: req.manager });
+  return {
+    ok: false,
+    status: "refused_owner",
+    error: `worker ${record.id} belongs to ${record.owner}; pass all:true to act on it`,
+  };
+}
+
 async function restartAction(req: Req): Promise<ActionResult> {
   const worker = str(req.worker);
   const previous = loadState().workers[worker];
@@ -396,6 +420,18 @@ async function restartAction(req: Req): Promise<ActionResult> {
   if (!guard.allowed) {
     logger.warn("tool.restart_memory_refused", { worker, reason: guard.reason });
     return { ok: false, status: "refused_memory", message: guard.reason };
+  }
+  // choose the replacement BEFORE killing: with nothing to switch to, leave the worker running
+  let model = str(req.model);
+  if (model === "") {
+    const best = pick({
+      difficulty: previous.difficulty ?? 2,
+      blocked: blockedModels(),
+      exclude: [previous.model],
+      running: runningCounts(previous.id),
+    })[0];
+    if (best === undefined) return { ok: false, error: "no replacement model available" };
+    model = best.id;
   }
   const deps = reaperDeps();
   if (deps.isAlive(previous.pid)) {
@@ -408,17 +444,6 @@ async function restartAction(req: Req): Promise<ActionResult> {
       state.workers[worker].endedAt = new Date().toISOString();
       state.workers[worker].killReason = "restart";
     });
-  }
-  let model = str(req.model);
-  if (model === "") {
-    const best = pick({
-      difficulty: previous.difficulty ?? 2,
-      blocked: blockedModels(),
-      exclude: [previous.model],
-      running: runningCounts(),
-    })[0];
-    if (best === undefined) return { ok: false, error: "no replacement model available" };
-    model = best.id;
   }
   const launched = await launchWorker({
     owner: previous.owner,
