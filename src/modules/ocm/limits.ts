@@ -36,6 +36,15 @@ export interface LimitHit {
   raw: string;
 }
 
+/** A session-keyed "Failed to drain Session" limit line; model unknown. */
+export interface SessionHit {
+  ts: string;
+  session: string;
+  kind: LimitKind;
+  resetAt?: string;
+  raw: string;
+}
+
 export interface ModelBlock {
   provider: string;
   model: string;
@@ -47,6 +56,20 @@ export interface ModelBlock {
 
 function field(line: string, name: string): string | undefined {
   return new RegExp(`\\b${name}=(\\S+)`).exec(line)?.[1];
+}
+
+/** resetAt from "reset at ..." (UTC+8) or "Resets in ..." text, or undefined. */
+function resetFrom(ts: string, text: string): string | undefined {
+  const at = /reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(text);
+  const resetsIn = /Resets in (\d+) (day|hour)s?/.exec(text);
+  if (at) {
+    return new Date(`${at[1].replace(" ", "T")}${RESET_ZONE}`).toISOString();
+  }
+  if (resetsIn) {
+    const ms = Number(resetsIn[1]) * (resetsIn[2] === "day" ? 86_400_000 : 3_600_000);
+    return new Date(Date.parse(ts) + ms).toISOString();
+  }
+  return undefined;
 }
 
 /**
@@ -71,16 +94,85 @@ export function parseLimitLine(line: string): LimitHit | null {
     logger.warn("limits.parse_failed", { provider, model, raw: line });
     return null;
   }
-  let resetAt: string | undefined;
-  const at = /reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(line);
-  const resetsIn = /Resets in (\d+) (day|hour)s?/.exec(line);
-  if (at) {
-    resetAt = new Date(`${at[1].replace(" ", "T")}${RESET_ZONE}`).toISOString();
-  } else if (resetsIn) {
-    const ms = Number(resetsIn[1]) * (resetsIn[2] === "day" ? 86_400_000 : 3_600_000);
-    resetAt = new Date(Date.parse(ts) + ms).toISOString();
-  }
+  const resetAt = resetFrom(ts, line);
   return { ts, provider, model, kind, resetAt, raw: line };
+}
+
+/**
+ * Parse a session-keyed drain-failure log line into a SessionHit. Only
+ * level=ERROR message="Failed to drain Session" lines with a trailing
+ * sessionID=<id> and a known limit cause count; everything else returns null.
+ */
+export function parseSessionLine(line: string): SessionHit | null {
+  if (field(line, "level") !== "ERROR" || !/\bmessage=\\?"Failed to drain Session\\?"/.test(line)) {
+    return null;
+  }
+  const session = /\bsessionID=(\S+)\s*$/.exec(line)?.[1];
+  const ts = field(line, "timestamp");
+  const kind = KINDS.find(([pattern]) => pattern.test(line))?.[1];
+  if (!session || !ts || Number.isNaN(Date.parse(ts)) || !kind) {
+    logger.warn("limits.parse_session_failed", { raw: line });
+    return null;
+  }
+  return { ts, session, kind, resetAt: resetFrom(ts, line), raw: line };
+}
+
+/**
+ * Parse one worker JSONL event line into a LimitHit for `model`
+ * (`provider/model`). Only `type: "error"` events with a recognized limit
+ * kind count; anything else returns null without throwing.
+ */
+export function parseWorkerEvent(line: string, model: string): LimitHit | null {
+  let event: {
+    type?: unknown;
+    timestamp?: unknown;
+    error?: { message?: unknown; type?: unknown; retryAfterMs?: unknown };
+  };
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (event.type !== "error" || Number.isNaN(new Date(Number(event.timestamp)).getTime())) {
+    return null;
+  }
+  const message = typeof event.error?.message === "string" ? event.error.message : "";
+  let kind: LimitKind | undefined = message.startsWith("This request requires more credits")
+    ? "insufficient_funds"
+    : KINDS.find(([pattern]) => pattern.test(message))?.[1];
+  if (!kind) {
+    kind = event.error?.type === "provider.free-limit" ? "free_usage" : undefined;
+  }
+  if (!kind) return null;
+  const ts = new Date(Number(event.timestamp)).toISOString();
+  const at = model.indexOf("/");
+  const provider = at > 0 ? model.slice(0, at) : "";
+  const id = at > 0 ? model.slice(at + 1) : model;
+  const retry = event.error?.retryAfterMs;
+  const resetAt =
+    typeof retry === "number" && retry > 0
+      ? new Date(Date.parse(ts) + retry).toISOString()
+      : resetFrom(ts, message);
+  return { ts, provider, model: id, kind, resetAt, raw: line };
+}
+
+/** Read the last `maxBytes` of a log file as lines, dropping a partial leading line. */
+export function readLogTail(
+  path: string,
+  maxBytes: number = DEFAULT_MAX_BYTES,
+): { bytes: number; lines: string[] } {
+  const size = statSync(path).size;
+  const start = Math.max(0, size - maxBytes);
+  const buf = Buffer.alloc(size - start);
+  const fd = openSync(path, "r");
+  try {
+    readSync(fd, buf, 0, buf.length, start);
+  } finally {
+    closeSync(fd);
+  }
+  const lines = buf.toString("utf8").split("\n");
+  if (start > 0) lines.shift();
+  return { bytes: buf.length, lines };
 }
 
 /**
@@ -96,18 +188,9 @@ export function scanLog(
   let bytes = 0;
   let lines: string[];
   try {
-    const size = statSync(path).size;
-    const start = Math.max(0, size - (opts.maxBytes ?? DEFAULT_MAX_BYTES));
-    bytes = size - start;
-    const buf = Buffer.alloc(bytes);
-    const fd = openSync(path, "r");
-    try {
-      readSync(fd, buf, 0, bytes, start);
-    } finally {
-      closeSync(fd);
-    }
-    lines = buf.toString("utf8").split("\n");
-    if (start > 0) lines.shift();
+    const tail = readLogTail(path, opts.maxBytes ?? DEFAULT_MAX_BYTES);
+    bytes = tail.bytes;
+    lines = tail.lines;
   } catch (error) {
     logger.error("limits.scan_failed", { path, ...errorFields(error) });
     return [];

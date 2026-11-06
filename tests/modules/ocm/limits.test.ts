@@ -7,6 +7,8 @@ import {
   type LimitHit,
   type LimitKind,
   parseLimitLine,
+  parseSessionLine,
+  parseWorkerEvent,
   scanLog,
 } from "../../../src/modules/ocm/limits.js";
 import { readLogs, serverLogPath } from "../../../src/modules/ocm/log.js";
@@ -131,6 +133,203 @@ describe("parseLimitLine", () => {
     ).toBeNull();
     expect(parseLimitLine(hitLine("Rate limit exceeded").replace(T, "not-a-time"))).toBeNull();
     expect(readLogs({ event: "limits.parse_failed" })).toHaveLength(2);
+  });
+});
+
+describe("parseSessionLine", () => {
+  // Real post-update sample: no model fields, sessionID at the very end, and
+  // literal backslash-n escapes inside the quoted cause.
+  const ZAI_SESSION_LINE =
+    "timestamp=2026-11-06T18:30:33.373Z level=ERROR run=c395a701 " +
+    'message="Failed to drain Session" cause="AI.Error: Weekly/Monthly Limit Exhausted. ' +
+    "Your limit will reset at 2026-11-10 02:02:55\\n    at Rae (/$bunfs/root/chunk-ek0q9z0p.js:3:3633)\\n" +
+    '  [cause]: AI.Error.QuotaExceeded: Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-10 02:02:55\\n}" ' +
+    "role=server sessionID=ses_e4de7b36bffeGj9tzvdxjKmhOH";
+  const FREE_SESSION_LINE =
+    "timestamp=2026-11-06T18:31:00.000Z level=ERROR run=c395a701 " +
+    'message="Failed to drain Session" cause="AI.Error: Free usage limit reached. Free models ' +
+    "work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: " +
+    'https://opencode.ai/go\\n    at Rae (/$bunfs/root/chunk-ek0q9z0p.js:3:3633)" ' +
+    "role=server sessionID=ses_e4de7b36bffeGj9tzvdxjKmhOH";
+
+  it("parses the real Z.AI session line with UTC+8 reset conversion", () => {
+    const parsed = parseSessionLine(ZAI_SESSION_LINE);
+    expect(parsed).toMatchObject({
+      ts: "2026-11-06T18:30:33.373Z",
+      session: "ses_e4de7b36bffeGj9tzvdxjKmhOH",
+      kind: "weekly_monthly",
+      resetAt: "2026-11-09T18:02:55.000Z",
+      raw: ZAI_SESSION_LINE,
+    });
+  });
+
+  it("parses the free-pool session variant", () => {
+    expect(parseSessionLine(FREE_SESSION_LINE)).toMatchObject({
+      ts: "2026-11-06T18:31:00.000Z",
+      session: "ses_e4de7b36bffeGj9tzvdxjKmhOH",
+      kind: "free_usage",
+      resetAt: undefined,
+    });
+  });
+
+  it("rejects non-ERROR lines", () => {
+    expect(parseSessionLine(ZAI_SESSION_LINE.replace("level=ERROR", "level=INFO"))).toBeNull();
+  });
+
+  it("rejects lines whose message is not Failed to drain Session", () => {
+    expect(
+      parseSessionLine(ZAI_SESSION_LINE.replace("Failed to drain Session", "Other error")),
+    ).toBeNull();
+  });
+
+  it("rejects lines without a trailing sessionID", () => {
+    expect(parseSessionLine(ZAI_SESSION_LINE.replace(/ sessionID=\S+$/, ""))).toBeNull();
+    // a sessionID-looking token inside the cause does not satisfy the anchor
+    expect(
+      parseSessionLine(
+        ZAI_SESSION_LINE.replace(/ sessionID=\S+$/, "").replace(
+          "run=c395a701",
+          "run=sessionID=ses_mid",
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it("warns and returns null for unknown cause text", () => {
+    expect(
+      parseSessionLine(
+        ZAI_SESSION_LINE.split("Weekly/Monthly Limit Exhausted").join("Some brand new wall"),
+      ),
+    ).toBeNull();
+  });
+
+  it("warns and returns null when the timestamp is missing", () => {
+    expect(
+      parseSessionLine(ZAI_SESSION_LINE.replace("timestamp=2026-11-06T18:30:33.373Z ", "")),
+    ).toBeNull();
+    expect(readLogs({ event: "limits.parse_session_failed" })).toHaveLength(1);
+  });
+});
+
+describe("parseWorkerEvent", () => {
+  const FREE_LIMIT_EVENT =
+    '{"type":"error","timestamp":1793989303016,"sessionID":"ses_e4de7b333ffehtj1J774fjIhKK",' +
+    '"error":{"type":"provider.free-limit","message":"Free usage limit reached. Connect a ' +
+    'provider or subscribe to OpenCode Go to keep going, or switch models.","status":429,' +
+    '"retryAfterMs":20313000}}';
+  const AUTH_EVENT =
+    '{"type":"error","timestamp":1793990000000,"sessionID":"ses_x",' +
+    '"error":{"type":"provider.auth","message":"Model access is disabled","status":403}}';
+  const QUOTA_EVENT =
+    '{"type":"error","timestamp":1793990000000,"sessionID":"ses_x","error":{"type":"provider.quota",' +
+    '"message":"This request requires more credits, or fewer max_tokens. You requested up to ' +
+    '256000 tokens, but can only afford 3774.","status":402}}';
+
+  it("parses the real free-limit event with a retryAfterMs reset", () => {
+    expect(parseWorkerEvent(FREE_LIMIT_EVENT, "zai-coding-plan/glm-5.3-flash")).toMatchObject({
+      ts: new Date(1793989303016).toISOString(),
+      provider: "zai-coding-plan",
+      model: "glm-5.3-flash",
+      kind: "free_usage",
+      resetAt: new Date(1793989303016 + 20313000).toISOString(),
+      raw: FREE_LIMIT_EVENT,
+    });
+  });
+
+  it("parses the real auth event", () => {
+    expect(parseWorkerEvent(AUTH_EVENT, "zai-coding-plan/glm-5.3-flash")).toMatchObject({
+      ts: new Date(1793990000000).toISOString(),
+      provider: "zai-coding-plan",
+      model: "glm-5.3-flash",
+      kind: "model_disabled",
+      resetAt: undefined,
+    });
+  });
+
+  it("parses the real credit/quota event", () => {
+    expect(parseWorkerEvent(QUOTA_EVENT, "zai-coding-plan/glm-5.3-flash")).toMatchObject({
+      kind: "insufficient_funds",
+      resetAt: undefined,
+    });
+  });
+
+  it("falls back to message text for the reset when retryAfterMs is not positive", () => {
+    const line = JSON.stringify({
+      type: "error",
+      timestamp: 1793990000000,
+      error: {
+        message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-10 02:02:55",
+      },
+    });
+    expect(parseWorkerEvent(line, "p/m")).toMatchObject({
+      kind: "weekly_monthly",
+      resetAt: "2026-11-09T18:02:55.000Z",
+      provider: "p",
+      model: "m",
+    });
+    const back = line.replace("reset at 2026-11-10 02:02:55", "Resets in 3 days");
+    expect(parseWorkerEvent(back, "p/m")?.resetAt).toBe(
+      new Date(Date.parse(new Date(1793990000000).toISOString()) + 3 * DAY_MS).toISOString(),
+    );
+  });
+
+  it("classifies free-limit by error.type when the message is unknown", () => {
+    const line = JSON.stringify({
+      type: "error",
+      timestamp: 1793990000000,
+      error: { type: "provider.free-limit", message: "Some brand new free wall sentence" },
+    });
+    expect(parseWorkerEvent(line, "p/m")?.kind).toBe("free_usage");
+  });
+
+  it("splits on the first slash only", () => {
+    const line = JSON.stringify({
+      type: "error",
+      timestamp: 1793990000000,
+      error: { message: "Rate limit exceeded" },
+    });
+    expect(parseWorkerEvent(line, "a/b/c")).toMatchObject({ provider: "a", model: "b/c" });
+    expect(parseWorkerEvent(line, "bare")).toMatchObject({ provider: "", model: "bare" });
+  });
+
+  it("rejects invalid JSON", () => {
+    expect(parseWorkerEvent("{oops", "p/m")).toBeNull();
+  });
+
+  it("rejects non-error events", () => {
+    expect(
+      parseWorkerEvent(
+        '{"type":"text","timestamp":1793990000000,"sessionID":"s","part":{"type":"text","text":"hi"}}',
+        "p/m",
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects unknown error messages", () => {
+    const line = JSON.stringify({
+      type: "error",
+      timestamp: 1793990000000,
+      error: { message: "Some brand new failure mode" },
+    });
+    expect(parseWorkerEvent(line, "p/m")).toBeNull();
+  });
+
+  it("rejects a non-string error message", () => {
+    const line = JSON.stringify({
+      type: "error",
+      timestamp: 1793990000000,
+      error: { message: 5 },
+    });
+    expect(parseWorkerEvent(line, "p/m")).toBeNull();
+  });
+
+  it("rejects an unparseable timestamp", () => {
+    const line = JSON.stringify({
+      type: "error",
+      timestamp: "soon",
+      error: { message: "Rate limit exceeded" },
+    });
+    expect(parseWorkerEvent(line, "p/m")).toBeNull();
   });
 });
 
