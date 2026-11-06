@@ -33,6 +33,7 @@ export interface WorkerRecord {
   exitCode?: number;
   killReason?: string;
   keepUntil?: string;
+  askedAt?: string;
 }
 
 export interface WarningRecord {
