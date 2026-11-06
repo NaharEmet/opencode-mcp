@@ -12,7 +12,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
-import { createLogger, errorFields, stateDir } from "./log.js";
+import { workersDir } from "./evidence.js";
+import { createLogger, errorFields } from "./log.js";
 import { updateState, upsertWorker } from "./state.js";
 
 /** Request to start one detached `opencode run` worker. */
@@ -35,13 +36,9 @@ export interface LaunchResult {
 
 const log = createLogger({ module: "launch" });
 
-function workersDir(): string {
-  return join(stateDir(), "logs", "workers");
-}
-
 /** Stdout capture file (`<id>.out.jsonl`) for a worker id. */
 export function workerOutPath(id: string): string {
-  return join(stateDir(), "logs", "workers", `${id}.out.jsonl`);
+  return join(workersDir(), `${id}.out.jsonl`);
 }
 
 /** Directory every worker cwd must live in: OCM_ALLOWED_ROOT else ~/Documents/code. */
