@@ -49,7 +49,8 @@
     "smoke": "pnpm check:smoke && pnpm build && node scripts/smoke.ts",
     "build": "rm -rf build && npx tsc && chmod +x build/src/index.js",
     "prepare": "npm run build",
-    "publish": "npm publish --access public"
+    "publish": "npm publish --access public",
+    "serve": "tsx src/http.ts"
   },
   "files": [
     "build",
