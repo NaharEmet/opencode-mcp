@@ -198,12 +198,15 @@ describe("parseSessionLine", () => {
     ).toBeNull();
   });
 
-  it("warns and returns null for unknown cause text", () => {
+  it("returns null at debug, without a warning, for a non-limit cause", () => {
+    process.env.OCM_LOG_LEVEL = "debug";
     expect(
       parseSessionLine(
-        ZAI_SESSION_LINE.split("Weekly/Monthly Limit Exhausted").join("Some brand new wall"),
+        ZAI_SESSION_LINE.split("Weekly/Monthly Limit Exhausted").join("requires more credits"),
       ),
     ).toBeNull();
+    expect(readLogs({ event: "limits.session_not_a_limit", level: "debug" })).toHaveLength(1);
+    expect(readLogs({ event: "limits.parse_session_failed" })).toHaveLength(0);
   });
 
   it("warns and returns null when the timestamp is missing", () => {

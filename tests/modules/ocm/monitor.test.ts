@@ -628,6 +628,7 @@ describe("workerResult", () => {
   });
 
   it("returns empty text and an empty diffStat without an output file", () => {
+    process.env.OCM_LOG_LEVEL = "debug";
     upsertWorker(worker("wr3", { cwd: dir })); // not a git repository either
     const result = workerResult("wr3");
     expect(result.text).toBe("");
@@ -636,14 +637,21 @@ describe("workerResult", () => {
     expect(readLogs({ event: "monitor.git_failed" })).toHaveLength(1);
   });
 
-  it("falls back to an empty diffStat and logs a warn when git fails", () => {
+  it("falls back to an empty diffStat and logs at debug when the cwd is not a repository", () => {
     process.env.OCM_LOG_LEVEL = "debug";
     upsertWorker(worker("wr4", { cwd: dir })); // not a git repository
     writeOut("wr4", [TEXT_FIRST_EVENT]);
     const result = workerResult("wr4");
     expect(result.text).toBe("I'll start by reading the file.");
     expect(result.diffStat).toBe("");
-    expect(readLogs({ event: "monitor.git_failed" })).toHaveLength(1);
+    expect(readLogs({ event: "monitor.git_failed", level: "debug" })).toHaveLength(1);
+    expect(readLogs({ event: "monitor.git_failed", level: "warn" })).toHaveLength(0);
+  });
+
+  it("warns when git fails for any other reason", () => {
+    upsertWorker(worker("wr5", { cwd: join(dir, "missing") }));
+    expect(workerResult("wr5").diffStat).toBe("");
+    expect(readLogs({ event: "monitor.git_failed", level: "warn" })).toHaveLength(1);
   });
 });
 

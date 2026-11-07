@@ -109,9 +109,14 @@ export function parseSessionLine(line: string): SessionHit | null {
   }
   const session = /\bsessionID=(\S+)\s*$/.exec(line)?.[1];
   const ts = field(line, "timestamp");
-  const kind = KINDS.find(([pattern]) => pattern.test(line))?.[1];
-  if (!session || !ts || Number.isNaN(Date.parse(ts)) || !kind) {
+  if (!session || !ts || Number.isNaN(Date.parse(ts))) {
     logger.warn("limits.parse_session_failed", { raw: line });
+    return null;
+  }
+  const kind = KINDS.find(([pattern]) => pattern.test(line))?.[1];
+  if (!kind) {
+    // a drain failure for some other cause (e.g. a 402 for credits): not a limit wall
+    logger.debug("limits.session_not_a_limit", { session });
     return null;
   }
   return { ts, session, kind, resetAt: resetFrom(ts, line), raw: line };

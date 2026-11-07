@@ -189,14 +189,20 @@ export async function launchWorker(req: LaunchRequest): Promise<LaunchResult> {
 function onExit(id: string, code: number | null, signal: string | null): void {
   const state = signal !== null ? "killed" : code === 0 ? "done" : "failed";
   try {
+    let missing = false;
     updateState((s) => {
-      // the record lookup throws when it vanished mid-run: caught below
       const worker = s.workers[id];
+      if (worker === undefined) {
+        missing = true;
+        return;
+      }
       worker.state = state;
       worker.endedAt = new Date().toISOString();
       worker.exitCode = code ?? undefined;
     });
-    log[state === "done" ? "info" : "warn"]("worker.exit", { id, code, signal, state });
+    // the record can be gone when state was reset mid-run; nothing left to update
+    if (missing) log.warn("worker.exit_record_missing", { id, code, signal, state });
+    else log[state === "done" ? "info" : "warn"]("worker.exit", { id, code, signal, state });
   } catch (error) {
     log.error("worker.exit_update_failed", { id, ...errorFields(error) });
   }

@@ -128,7 +128,7 @@ export function collectHits(
       });
     }
     if (unattributed > 0 && workerHits + logHits + sessionHits > 0) {
-      logger.warn("evidence.unattributed_sessions", { unattributed, attributed: sessionHits });
+      logger.debug("evidence.unattributed_sessions", { unattributed, attributed: sessionHits });
     }
   } catch (error) {
     logger.warn("evidence.log_unreadable", { path: logPath, ...errorFields(error) });

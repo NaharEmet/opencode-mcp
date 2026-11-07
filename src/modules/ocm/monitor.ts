@@ -462,7 +462,9 @@ export function workerResult(
       execFileSync("git", ["status", "--short"], { cwd: record.cwd, timeout: 5000 }).toString();
   } catch (error) {
     diffStat = "";
-    log.warn("monitor.git_failed", { worker: id, cwd: record.cwd, ...errorFields(error) });
+    // a worker outside any repository has no diff to report: not worth a warning
+    const level = /not a git repository/i.test(String(error)) ? "debug" : "warn";
+    log[level]("monitor.git_failed", { worker: id, cwd: record.cwd, ...errorFields(error) });
   }
   return { id, state: record.state, exitCode: record.exitCode, text, diffStat, truncated };
 }

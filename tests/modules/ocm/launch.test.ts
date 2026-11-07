@@ -208,7 +208,7 @@ describe("launchWorker spawn", () => {
     expect(readdirSync(join(stateDir(), "logs", "workers"))).toEqual([]);
   });
 
-  it("logs but never throws when the record vanished before exit", async () => {
+  it("warns but never throws when the record vanished before exit", async () => {
     process.env.OCM_OPENCODE_BIN = bin("slow", SLOW);
     const result = await launchWorker(req());
     await until("running", () => record(result.id)?.state === "running");
@@ -216,10 +216,25 @@ describe("launchWorker spawn", () => {
       delete s.workers[result.id];
     });
     process.kill(result.pid, "SIGTERM");
-    await until("exit_update_failed", () =>
-      logsAt("worker.exit_update_failed", "error").some((e) => e.id === result.id),
+    await until("exit_record_missing", () =>
+      logsAt("worker.exit_record_missing", "warn").some((e) => e.id === result.id),
     );
     expect(record(result.id)).toBeUndefined();
+  });
+
+  it("logs an error but never throws when the state cannot be written at exit", async () => {
+    process.env.OCM_OPENCODE_BIN = bin("slow", SLOW);
+    const result = await launchWorker(req());
+    await until("running", () => record(result.id)?.state === "running");
+    chmodSync(stateDir(), 0o500);
+    try {
+      process.kill(result.pid, "SIGTERM");
+      await until("exit_update_failed", () =>
+        logsAt("worker.exit_update_failed", "error").some((e) => e.id === result.id),
+      );
+    } finally {
+      chmodSync(stateDir(), 0o700);
+    }
   });
 
   it("falls back to `opencode` on the PATH when OCM_OPENCODE_BIN is unset", async () => {

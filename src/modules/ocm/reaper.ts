@@ -6,6 +6,8 @@ import { loadState, updateState, upsertWorker, type WorkerRecord } from "./state
 const log = createLogger({ module: "reaper" });
 
 const KILL_WAIT_MS = 5000;
+// `ps` can take a while on a busy machine; one timeout is not an error worth raising
+const PS_TIMEOUT_MS = 15_000;
 const KILL_POLL_MS = 100;
 const REAPABLE: WorkerRecord["state"][] = ["running", "stalled", "orphan"];
 
@@ -235,9 +237,11 @@ export function defaultDeps(emit: ReaperDeps["emit"]): ReaperDeps {
   const listProcesses = (): ProcessInfo[] => {
     let out: string;
     try {
-      out = execFileSync("ps", ["-eo", "pid=,etimes=,args="], { timeout: KILL_WAIT_MS }).toString();
+      out = execFileSync("ps", ["-eo", "pid=,etimes=,args="], {
+        timeout: PS_TIMEOUT_MS,
+      }).toString();
     } catch (error) {
-      log.error("reaper.ps_failed", errorFields(error));
+      log.warn("reaper.ps_failed", errorFields(error));
       return [];
     }
     return out

@@ -660,9 +660,8 @@ describe("defaultDeps", () => {
     fakePs();
     fakePath();
     process.env.FAKE_PS_MODE = "fail";
+    process.env.OCM_LOG_LEVEL = "debug";
     expect(defaultDeps(() => {}).listProcesses()).toEqual([]);
-    expect(readLogs({ event: "reaper.ps_failed", level: "error" }).length).toBeGreaterThanOrEqual(
-      1,
-    );
+    expect(readLogs({ event: "reaper.ps_failed", level: "warn" }).length).toBeGreaterThanOrEqual(1);
   });
 });
