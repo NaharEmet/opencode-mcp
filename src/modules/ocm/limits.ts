@@ -202,6 +202,36 @@ export function scanLog(
   return found;
 }
 
+/** Model key used when a limit applies to every model of a provider. */
+export const ANY_MODEL = "*";
+
+/** Provider whose wall a model-less limit line describes, from its verified text. */
+export function providerForKind(kind: LimitKind, raw: string): string | undefined {
+  if (kind === "weekly_monthly") return "zai-coding-plan";
+  if (kind === "weekly") return "opencode-go";
+  if (kind === "free_usage") return "opencode";
+  if (kind === "insufficient_funds" && raw.includes("openrouter.ai")) return "openrouter";
+  return undefined;
+}
+
+/** The block (exact model or provider-wide) that applies to `provider/model`, if any. */
+export function blockFor(blocks: ModelBlock[], model: string): ModelBlock | undefined {
+  return blocks.find(
+    (b) =>
+      `${b.provider}/${b.model}` === model ||
+      (b.model === ANY_MODEL && model.startsWith(`${b.provider}/`)),
+  );
+}
+
+/** Latest clearing time for a hit; a provider-wide hit is cleared by any model of that provider. */
+function clearedFor(hit: LimitHit, cleared: Record<string, string>): string | undefined {
+  if (hit.model !== ANY_MODEL) return cleared[`${hit.provider}/${hit.model}`];
+  const times = Object.entries(cleared)
+    .filter(([key]) => key.startsWith(`${hit.provider}/`))
+    .map(([, at]) => at);
+  return times.sort().at(-1);
+}
+
 /**
  * Newest hit per provider/model, dropping blocks whose resetAt has passed or
  * that were cleared by a later successful run. Blocks without resetAt stay
@@ -219,9 +249,9 @@ export function currentBlocks(
     if (!held || Date.parse(hit.ts) >= Date.parse(held.ts)) newest.set(key, hit);
   }
   const blocks: ModelBlock[] = [];
-  for (const [key, hit] of newest) {
+  for (const hit of newest.values()) {
     if (hit.resetAt && Date.parse(hit.resetAt) < now.getTime()) continue;
-    const clearedAt = cleared[key];
+    const clearedAt = clearedFor(hit, cleared);
     if (clearedAt && Date.parse(clearedAt) > Date.parse(hit.ts)) continue;
     blocks.push({
       provider: hit.provider,

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { collectHits, workersDir } from "../../../src/modules/ocm/evidence.js";
+import { ANY_MODEL } from "../../../src/modules/ocm/limits.js";
 import { readLogs } from "../../../src/modules/ocm/log.js";
 import { upsertWorker, type WorkerRecord } from "../../../src/modules/ocm/state.js";
 
@@ -17,6 +18,10 @@ const SESSION_LINE =
   'message="Failed to drain Session" cause="AI.Error: Weekly/Monthly Limit Exhausted. ' +
   "Your limit will reset at 2026-11-10 02:02:55\\n    at Rae (/$bunfs/root/chunk-ek0q9z0p.js:3:3633)\\n" +
   '  [cause]: AI.Error.QuotaExceeded: Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-10 02:02:55\\n}" ' +
+  "role=server sessionID=ses_e4de7b36bffeGj9tzvdxjKmhOH";
+const RATE_SESSION_LINE =
+  "timestamp=2026-11-06T18:30:40.000Z level=ERROR run=c395a701 " +
+  'message="Failed to drain Session" cause="AI.Error: Rate limit exceeded. Try again later." ' +
   "role=server sessionID=ses_e4de7b36bffeGj9tzvdxjKmhOH";
 const FREE_SESSION_LINE =
   "timestamp=2026-11-06T18:31:00.000Z level=ERROR run=c395a701 " +
@@ -64,12 +69,14 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "ocm-evidence-"));
   process.env.OCM_STATE_DIR = dir;
+  process.env.HOME = dir; // keeps the default log path inside the temp dir
   mkdirSync(workersDir(), { recursive: true });
 });
 
 afterEach(() => {
   delete process.env.OCM_STATE_DIR;
   delete process.env.OCM_LOG_LEVEL;
+  delete process.env.HOME;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -166,10 +173,28 @@ describe("collectHits", () => {
     ]);
   });
 
-  it("drops an unattributable session line and only warns when hits were attributed", () => {
+  it("turns an unattributable session line into a provider-wide hit", () => {
     process.env.OCM_LOG_LEVEL = "debug";
     upsertWorker(worker("w5", { session: "ses_other" }));
     writeFileSync(join(dir, "opencode.log"), `${SESSION_LINE}\n`);
+    expect(collectHits({ logPath: join(dir, "opencode.log"), now: NOW })).toEqual([
+      {
+        ts: "2026-11-06T18:30:33.373Z",
+        provider: "zai-coding-plan",
+        model: ANY_MODEL,
+        kind: "weekly_monthly",
+        resetAt: "2026-11-09T18:02:55.000Z",
+        raw: SESSION_LINE,
+      },
+    ]);
+    expect(readLogs({ event: "evidence.session_unattributed" })).toHaveLength(0);
+    expect(readLogs({ event: "evidence.unattributed_sessions" })).toHaveLength(0);
+  });
+
+  it("drops an unattributable session line whose kind names no provider", () => {
+    process.env.OCM_LOG_LEVEL = "debug";
+    upsertWorker(worker("w5", { session: "ses_other" }));
+    writeFileSync(join(dir, "opencode.log"), `${RATE_SESSION_LINE}\n`);
     expect(collectHits({ logPath: join(dir, "opencode.log"), now: NOW })).toEqual([]);
     expect(readLogs({ event: "evidence.session_unattributed" })).toHaveLength(1);
     expect(readLogs({ event: "evidence.unattributed_sessions" })).toHaveLength(0);

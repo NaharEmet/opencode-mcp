@@ -322,7 +322,7 @@ describe("reapStep", () => {
     expect(emits[0]?.kind).toBe("reaped");
   });
 
-  it("marks a dead pid killed without an ask", async () => {
+  it("marks a dead pid done, not killed, without an ask", async () => {
     upsertWorker(fixture("w1"));
     const { deps, emits, killed } = fakeDeps({ isAlive: () => false });
     await reapStep(deps, NOW);
@@ -331,8 +331,8 @@ describe("reapStep", () => {
       { worker: "w1", owner: "owen", kind: "reaped", detail: "worker w1 already exited" },
     ]);
     const rec = loadState().workers.w1;
-    expect(rec?.state).toBe("killed");
-    expect(rec?.killReason).toBe("already exited");
+    expect(rec?.state).toBe("done");
+    expect(rec).not.toHaveProperty("killReason");
     expect(rec?.endedAt).toBe(NOW.toISOString());
   });
 

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyVerdict,
+  budgetStatus,
   type DispatchRecord,
   exportPolicy,
   importPolicy,
@@ -23,6 +24,7 @@ import {
   pick,
   poolOf,
   recordDispatch,
+  spendSummary,
   updateLedger,
   usageFromOutput,
 } from "../../../src/modules/ocm/ledger.js";
@@ -610,5 +612,74 @@ describe("ledger round trip through disk", () => {
     expect(exportPolicy(FIXTURE, ledger).split("\n")).toContain(
       "| `zai-coding-plan/glm-5.3-flash` | unrated | unrated | D1 | 1 pass / 0 strike |  |",
     );
+  });
+});
+
+describe("spendSummary", () => {
+  const NOW = new Date("2026-01-10T00:00:00.000Z");
+  const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+  const HOUR = 3_600_000;
+
+  it("is empty with no dispatches file", () => {
+    expect(spendSummary(NOW)).toEqual({ "5h": {}, "24h": {}, "7d": {}, total: {} });
+  });
+
+  it("buckets runs, cost and tokens per pool and window, and skips unreadable lines", () => {
+    process.env.OCM_LOG_LEVEL = "debug";
+    recordDispatch(dispatch("opencode-go/glm-5.3-flash", { ts: ago(HOUR), costUsd: 0.1 }));
+    recordDispatch(dispatch("opencode-go/glm-5.3-flash", { ts: ago(10 * HOUR), costUsd: 0.2 }));
+    recordDispatch(dispatch("opencode-go/glm-5.3-flash", { ts: ago(3 * 24 * HOUR), costUsd: 0.4 }));
+    recordDispatch(
+      dispatch("opencode-go/glm-5.3-flash", { ts: ago(30 * 24 * HOUR), costUsd: 0.8 }),
+    );
+    writeFileSync(join(dir, "dispatches.jsonl"), `{oops\n\n`, { flag: "a" });
+    const spend = spendSummary(NOW);
+    const go = poolOf("opencode-go/glm-5.3-flash");
+    expect(spend["5h"][go]).toMatchObject({
+      runs: 1,
+      costUsd: 0.1,
+      inputTokens: 100,
+      outputTokens: 50,
+    });
+    expect(spend["24h"][go]).toMatchObject({ runs: 2 });
+    expect(spend["7d"][go]).toMatchObject({ runs: 3 });
+    expect(spend.total[go]).toMatchObject({ runs: 4 });
+    expect(spend.total[go].costUsd).toBeCloseTo(1.5);
+    expect(readLogs({ event: "ledger.dispatch_line_unreadable" })).toHaveLength(1);
+  });
+});
+
+describe("budgetStatus", () => {
+  const spend = {
+    "5h": { go: { runs: 1, costUsd: 0.1, inputTokens: 0, outputTokens: 0 } },
+    "24h": { go: { runs: 1, costUsd: 0.09, inputTokens: 0, outputTokens: 0 } },
+    "7d": {},
+    total: { go: { runs: 1, costUsd: 0.5, inputTokens: 0, outputTokens: 0 } },
+  };
+
+  it("returns nothing without a config", () => {
+    expect(budgetStatus(spend, undefined)).toEqual([]);
+    expect(budgetStatus(spend, "")).toEqual([]);
+  });
+
+  it("reports ok, warn and over levels and treats a missing pool as zero spend", () => {
+    const out = budgetStatus(spend, "go:5h:0.1, go:24h:0.1 ,go:total:1,zai:7d:5");
+    expect(out.map((b) => [b.pool, b.window, b.pct, b.level])).toEqual([
+      ["go", "5h", 100, "over"],
+      ["go", "24h", 90, "warn"],
+      ["go", "total", 50, "ok"],
+      ["zai", "7d", 0, "ok"],
+    ]);
+  });
+
+  it("logs and skips malformed entries, defaulting to OCM_BUDGETS", () => {
+    process.env.OCM_LOG_LEVEL = "debug";
+    process.env.OCM_BUDGETS = "go:5h:0.2,:5h:1,go:1y:1,go:5h:abc,go:5h:-1";
+    try {
+      expect(budgetStatus(spend)).toHaveLength(1);
+    } finally {
+      delete process.env.OCM_BUDGETS;
+    }
+    expect(readLogs({ event: "ledger.budget_entry_invalid" })).toHaveLength(4);
   });
 });

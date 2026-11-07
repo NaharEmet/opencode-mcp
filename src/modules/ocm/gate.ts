@@ -1,5 +1,5 @@
 import { collectHits } from "./evidence.js";
-import { currentBlocks, type ModelBlock } from "./limits.js";
+import { blockFor, currentBlocks, type ModelBlock } from "./limits.js";
 import { createLogger } from "./log.js";
 import { loadState, markCleared, recordWarning, takeWarning } from "./state.js";
 
@@ -61,9 +61,7 @@ export function checkLaunch(
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
   const mode = opts.mode ?? limitMode();
   const hits = collectHits({ logPath: opts.logPath, sinceMs: 7 * DAY_MS, now });
-  const block = currentBlocks(hits, now, loadState().cleared).find(
-    (b) => `${b.provider}/${b.model}` === model,
-  );
+  const block = blockFor(currentBlocks(hits, now, loadState().cleared), model);
   let decision: GateDecision;
   if (!block) {
     logger.debug("gate.no_block", { model });

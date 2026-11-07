@@ -95,6 +95,15 @@ function askDetail(worker: WorkerRecord, ageMs: number): string {
   )} old; still using it? keep ${worker.id} or release ${worker.id}`;
 }
 
+/** A tracked process that ended on its own: done, not killed. */
+function markExited(id: string, now: Date): void {
+  updateState((state) => {
+    const worker = state.workers[id];
+    worker.state = "done";
+    worker.endedAt = now.toISOString();
+  });
+}
+
 /** Mark a record killed; a record that vanished mid-run throws (caught by reapStep). */
 function markKilled(id: string, now: Date, killReason: string): void {
   const iso = now.toISOString();
@@ -151,7 +160,7 @@ async function stepWorker(
   const ageMs = nowMs - Date.parse(worker.startedAt);
   if (ageMs < reapAfterMs()) return;
   if (!deps.isAlive(worker.pid)) {
-    markKilled(worker.id, now, "already exited");
+    markExited(worker.id, now);
     deps.emit({
       worker: worker.id,
       owner: worker.owner,

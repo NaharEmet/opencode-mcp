@@ -8,15 +8,17 @@ import { checkLaunch } from "./gate.js";
 import { launchWorker, workerOutPath } from "./launch.js";
 import {
   applyVerdict,
+  budgetStatus,
   type DispatchRecord,
   exportPolicy,
   importPolicy,
   loadLedger,
   pick,
   recordDispatch,
+  spendSummary,
   usageFromOutput,
 } from "./ledger.js";
-import { currentBlocks } from "./limits.js";
+import { blockFor, currentBlocks } from "./limits.js";
 import {
   createLogger,
   errorFields,
@@ -36,6 +38,7 @@ import {
   releaseWorker,
 } from "./reaper.js";
 import { loadState, updateState, type WorkerRecord } from "./state.js";
+import { VERSION } from "./version.js";
 
 /**
  * Single entry point behind the `opencode_worker` MCP tool: every worker
@@ -152,9 +155,10 @@ function memoryGuard(): { allowed: boolean; reason?: string } {
 /** Model ids with an active limit block, over the state's cleared map. */
 function blockedModels(): string[] {
   const hits = collectHits({ logPath: process.env.OCM_OPENCODE_LOG });
-  return currentBlocks(hits, new Date(), loadState().cleared).map(
-    (block) => `${block.provider}/${block.model}`,
-  );
+  const blocks = currentBlocks(hits, new Date(), loadState().cleared);
+  const ids = new Set(Object.keys(loadLedger().models));
+  for (const block of blocks) ids.add(`${block.provider}/${block.model}`);
+  return [...ids].filter((id) => blockFor(blocks, id) !== undefined);
 }
 
 /** Count of running workers per model, as pick() expects. */
@@ -204,6 +208,13 @@ function hadLimitEvent(worker: string): boolean {
  */
 function recordOnce(record: WorkerRecord, now: Date, verdict?: "pass" | "strike"): void {
   if (record.recordedAt !== undefined) return;
+  if (record.owner === "orphan") {
+    // adopted foreign process: no usage evidence, so it must not skew the ledger
+    updateState((state) => {
+      state.workers[record.id].recordedAt = now.toISOString();
+    });
+    return;
+  }
   const usage = usageFromOutput(workerOutPath(record.id));
   const endedAt = record.endedAt ?? now.toISOString();
   recordDispatch({
@@ -476,8 +487,13 @@ function budgetAction(): ActionResult {
     resetAt: block.resetAt,
     raw: block.raw.slice(0, 200),
   }));
-  logger.debug("tool.budget", { blocks: blocks.length });
-  return { ok: true, blocks, memory: readMemoryOrLog() };
+  const spend = spendSummary(now);
+  const budgets = budgetStatus(spend);
+  for (const budget of budgets.filter((b) => b.level !== "ok")) {
+    logger.warn("tool.budget_threshold", { ...budget });
+  }
+  logger.debug("tool.budget", { blocks: blocks.length, budgets: budgets.length });
+  return { ok: true, blocks, spend, budgets, memory: readMemoryOrLog() };
 }
 
 function pickAction(req: Req): ActionResult {
@@ -587,7 +603,7 @@ function healthAction(): ActionResult {
   }
   return {
     ok: true,
-    version: "1.0.0",
+    version: VERSION,
     uptime_s: Math.round(process.uptime()),
     workers: counts,
     memory: readMemoryOrLog(),

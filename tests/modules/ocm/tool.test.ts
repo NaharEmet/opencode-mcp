@@ -11,7 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { launchWorker, workerOutPath } from "../../../src/modules/ocm/launch.js";
-import { importPolicy, loadLedger } from "../../../src/modules/ocm/ledger.js";
+import {
+  importPolicy,
+  loadLedger,
+  poolOf,
+  recordDispatch,
+} from "../../../src/modules/ocm/ledger.js";
 import { type LogEntry, readLogs, serverLogPath, stateDir } from "../../../src/modules/ocm/log.js";
 import { appendEvent, readEvents } from "../../../src/modules/ocm/monitor.js";
 import * as reaper from "../../../src/modules/ocm/reaper.js";
@@ -22,6 +27,7 @@ import {
   handleAction,
   tick,
 } from "../../../src/modules/ocm/tool.js";
+import { VERSION } from "../../../src/modules/ocm/version.js";
 
 const MODEL = "openai/gpt-6-luna";
 const ZAI = "zai-coding-plan/glm-5.3-flash";
@@ -33,6 +39,8 @@ const ENVS = [
   "OCM_POLICY_PATH",
   "OCM_MEMINFO",
   "OCM_LIMIT_MODE",
+  "OCM_BUDGETS",
+  "OCM_LOG_LEVEL",
   "OCM_MIN_AVAILABLE_MB",
   "FAKE_EXIT",
 ];
@@ -162,6 +170,7 @@ beforeEach(() => {
   process.env.OCM_ALLOWED_ROOT = root;
   process.env.OCM_OPENCODE_BIN = bin("fake", CAPTURE);
   process.env.OCM_POLICY_PATH = join(base, "policy.md");
+  process.env.OCM_OPENCODE_LOG = logFile; // never read the real opencode log; absent until a test writes it
   meminfo(8_000_000);
 });
 
@@ -412,6 +421,43 @@ describe("budget", () => {
     expect(blocks[0].raw.length).toBeLessThanOrEqual(200);
     expect(res.memory).toMatchObject({ totalMb: 7812, availableMb: 7812 });
   });
+
+  it("reports spend and budget status, warning when a cap is crossed", async () => {
+    process.env.OCM_LOG_LEVEL = "debug";
+    process.env.OCM_BUDGETS = `${poolOf(MODEL)}:5h:0.1`;
+    recordDispatch({
+      worker: "b1",
+      ts: new Date().toISOString(),
+      model: MODEL,
+      wallSec: 1,
+      costUsd: 0.2,
+      tokens: { input: 1, output: 2, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+      outcome: "done",
+    });
+    const res = await call({ action: "budget" });
+    const pool = poolOf(MODEL);
+    expect((res.spend as Record<string, Record<string, unknown>>).total[pool]).toMatchObject({
+      runs: 1,
+    });
+    expect(res.budgets).toEqual([expect.objectContaining({ pool, window: "5h", level: "over" })]);
+    expect(readLogs({ event: "tool.budget_threshold" })).toHaveLength(1);
+  });
+
+  it("lists a provider-wide block from an unattributed session line", async () => {
+    writeFileSync(
+      logFile,
+      `timestamp=${iso(1)} level=ERROR message="Failed to drain Session" cause="AI.Error: ` +
+        `Weekly/Monthly Limit Exhausted. Your limit will reset at 2099-11-10 02:02:55" ` +
+        "role=server sessionID=ses_unknown\n",
+    );
+    const res = await call({ action: "budget" });
+    expect(res.blocks).toEqual([
+      expect.objectContaining({ model: "zai-coding-plan/*", kind: "weekly_monthly" }),
+    ]);
+    // the wall also keeps every model of that provider out of pick
+    importPolicy(tiersOnlyDoc([tierRow(ZAI, "fast", "strong", 3, "1 pass / 0 strike")]));
+    expect((await call({ action: "pick", difficulty: 3 })).picks).toEqual([]);
+  });
 });
 
 describe("pick", () => {
@@ -481,6 +527,15 @@ describe("verdict", () => {
     const dup = await call({ action: "verdict", worker: "wr", verdict: "pass" });
     expect(dup.ok).toBe(true);
     expect(dispatchLines()).toHaveLength(3);
+  });
+
+  it("stamps an adopted orphan as recorded without adding a dispatch", async () => {
+    importPolicy(tiersOnlyDoc([tierRow(MODEL, "fast", "strong", 2, "0 pass / 0 strike")]));
+    upsertWorker(rec("wo", MODEL, { owner: "orphan", state: "done" }));
+    const res = await call({ action: "verdict", worker: "wo", verdict: "pass", all: true });
+    expect(res.ok).toBe(true);
+    expect(existsSync(join(stateDir(), "dispatches.jsonl"))).toBe(false);
+    expect(loadState().workers.wo?.recordedAt).toBeDefined();
   });
 
   it("errors for an unknown model, worker, missing or invalid verdict", async () => {
@@ -634,7 +689,7 @@ describe("health", () => {
     const res = await call({ action: "health" });
     expect(res).toMatchObject({
       ok: true,
-      version: "1.0.0",
+      version: VERSION,
       workers: { done: 1, running: 1 },
       state_dir: stateDir(),
       log: serverLogPath(),

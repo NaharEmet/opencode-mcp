@@ -3,12 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  ANY_MODEL,
+  blockFor,
   currentBlocks,
   type LimitHit,
   type LimitKind,
   parseLimitLine,
   parseSessionLine,
   parseWorkerEvent,
+  providerForKind,
   scanLog,
 } from "../../../src/modules/ocm/limits.js";
 import { readLogs, serverLogPath } from "../../../src/modules/ocm/log.js";
@@ -443,5 +446,48 @@ describe("currentBlocks", () => {
     expect(
       currentBlocks([block], now, { "zai-coding-plan/glm-5.3-flash": "2026-11-01T00:00:00.000Z" }),
     ).toHaveLength(0);
+  });
+});
+
+describe("providerForKind", () => {
+  it("maps verified message kinds to the provider whose wall they describe", () => {
+    expect(providerForKind("weekly_monthly", "")).toBe("zai-coding-plan");
+    expect(providerForKind("weekly", "")).toBe("opencode-go");
+    expect(providerForKind("free_usage", "")).toBe("opencode");
+    expect(providerForKind("insufficient_funds", "see openrouter.ai/settings")).toBe("openrouter");
+  });
+
+  it("leaves ambiguous kinds unattributed", () => {
+    expect(providerForKind("insufficient_funds", "no credit")).toBeUndefined();
+    expect(providerForKind("five_hour", "")).toBeUndefined();
+    expect(providerForKind("rate_limit", "")).toBeUndefined();
+    expect(providerForKind("model_disabled", "")).toBeUndefined();
+  });
+});
+
+describe("provider-wide blocks", () => {
+  const now = new Date("2026-11-01T00:00:00.000Z");
+  const wide = hit({ model: ANY_MODEL, kind: "weekly_monthly", ts: "2026-10-31T12:00:00.000Z" });
+  const blocks = currentBlocks([wide], now);
+
+  it("blockFor matches an exact model and any model of the provider", () => {
+    expect(blockFor(blocks, "zai-coding-plan/glm-5.3-flash")).toBeDefined();
+    expect(blockFor(blocks, "zai-coding-plan/glm-9")).toBeDefined();
+    expect(blockFor(blocks, "opencode-go/glm-5.3-flash")).toBeUndefined();
+    expect(blockFor(blocks, "zai-coding-plan-x/glm")).toBeUndefined();
+  });
+
+  it("is cleared by a later success of any model of that provider", () => {
+    const cleared = { "zai-coding-plan/glm-9": "2026-10-31T13:00:00.000Z" };
+    expect(currentBlocks([wide], now, cleared)).toEqual([]);
+  });
+
+  it("survives a success older than the hit or from another provider", () => {
+    const cleared = {
+      "zai-coding-plan/glm-9": "2026-10-31T11:00:00.000Z",
+      "zai-coding-plan/glm-8": "2026-10-31T10:00:00.000Z",
+      "opencode-go/x": "2026-10-31T13:00:00.000Z",
+    };
+    expect(currentBlocks([wide], now, cleared)).toHaveLength(1);
   });
 });

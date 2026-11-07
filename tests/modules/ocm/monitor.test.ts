@@ -332,7 +332,7 @@ describe("ingestWorker", () => {
 describe("sweep", () => {
   it("does nothing without workers", () => {
     process.env.OCM_LOG_LEVEL = "debug";
-    sweep();
+    sweep(NOW);
     expect(readLogs({ event: "monitor.sweep" }).at(-1)).toMatchObject({
       workers: 0,
       running: 0,
@@ -345,8 +345,8 @@ describe("sweep", () => {
   it("appends started once for a running, alive worker", () => {
     upsertWorker(worker("sw1", { state: "running" }));
     upsertWorker(worker("sw1b", { state: "done" })); // finished records are not re-armed
-    sweep();
-    sweep();
+    sweep(NOW);
+    sweep(NOW);
     expect(eventsFor("sw1").map((e) => e.kind)).toEqual(["started"]);
     expect(eventsFor("sw1b")).toEqual([]);
   });
@@ -356,7 +356,7 @@ describe("sweep", () => {
     const pid = await deadPid();
     upsertWorker(worker("sw2", { pid }));
     writeOut("sw2", [STEP_START_EVENT, FINISH_STOP_EVENT]);
-    sweep();
+    sweep(NOW);
     expect(eventsFor("sw2").map((e) => e.kind)).toEqual(["started", "done"]);
     expect(eventsFor("sw2").at(-1)?.detail).toBeUndefined();
     const record = readStateWorker("sw2") as WorkerRecord;
@@ -375,7 +375,7 @@ describe("sweep", () => {
     upsertWorker(worker("sw3", { pid }));
     writeOut("sw3", [STEP_START_EVENT, TEXT_FIRST_EVENT]);
     writeFileSync(errPath("sw3"), "trace...\nerror: token=abc123secret xyz\nOK so far");
-    sweep();
+    sweep(NOW);
     const died = eventsFor("sw3").find((e) => e.kind === "died");
     expect(died?.detail).toBe("last event text; trace...\nerror: token=[redacted] xyz\nOK so far");
     const record = readStateWorker("sw3") as WorkerRecord;
@@ -390,7 +390,7 @@ describe("sweep", () => {
     upsertWorker(worker("sw4", { pid }));
     // no output file at all: the clean-end probe and the stderr tail come up empty
     writeFileSync(errPath("sw4"), "");
-    sweep();
+    sweep(NOW);
     const died = eventsFor("sw4").find((e) => e.kind === "died");
     expect(died?.detail).toBe("last event unknown");
     expect((readStateWorker("sw4") as WorkerRecord).state).toBe("failed");
@@ -400,7 +400,7 @@ describe("sweep", () => {
     const pid = await deadPid();
     upsertWorker(worker("sw4b", { pid }));
     writeOut("sw4b", []); // the file exists but holds no complete event
-    sweep();
+    sweep(NOW);
     const died = eventsFor("sw4b").find((e) => e.kind === "died");
     expect(died?.detail).toBe("last event unknown");
     expect((readStateWorker("sw4b") as WorkerRecord).state).toBe("failed");
@@ -410,7 +410,7 @@ describe("sweep", () => {
     const pid = await deadPid();
     upsertWorker(worker("sw5", { pid }));
     writeOut("sw5", [FINISH_STOP_EVENT, "{oops\n"]);
-    sweep();
+    sweep(NOW);
     expect((readStateWorker("sw5") as WorkerRecord).state).toBe("failed");
   });
 
@@ -420,7 +420,7 @@ describe("sweep", () => {
     upsertWorker(worker("sw6", { pid }));
     writeOut("sw6", [TEXT_FIRST_EVENT]);
     mkdirSync(errPath("sw6")); // a directory instead of the log file
-    sweep();
+    sweep(NOW);
     const died = eventsFor("sw6").find((e) => e.kind === "died");
     expect(died?.detail).toBe("last event text");
     expect(readLogs({ event: "monitor.err_unreadable" })).toHaveLength(1);
@@ -428,7 +428,7 @@ describe("sweep", () => {
 
   it("keeps a running worker whose pid belongs to another user", () => {
     upsertWorker(worker("sw7", { pid: 1 }));
-    sweep();
+    sweep(NOW);
     expect((readStateWorker("sw7") as WorkerRecord).state).toBe("running");
   });
 
@@ -480,7 +480,7 @@ describe("sweep", () => {
     updateSpy.conflicts.push((state) => {
       delete state.workers.rc1;
     });
-    sweep();
+    sweep(NOW);
     expect(readStateWorker("rc1")).toBeUndefined();
     // started is announced up front, before the other writer's delete lands
     expect(readEvents().map((e) => e.kind)).toEqual(["started"]);
@@ -493,7 +493,7 @@ describe("sweep", () => {
     updateSpy.conflicts.push((state) => {
       if (state.workers.rc2?.state === "running") state.workers.rc2.state = "killed";
     });
-    sweep();
+    sweep(NOW);
     expect((readStateWorker("rc2") as WorkerRecord).state).toBe("killed");
     expect(eventsFor("rc2").map((e) => e.kind)).toEqual(["started"]);
   });

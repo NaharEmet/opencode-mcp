@@ -2,10 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  ANY_MODEL,
   type LimitHit,
   parseLimitLine,
   parseSessionLine,
   parseWorkerEvent,
+  providerForKind,
   readLogTail,
 } from "./limits.js";
 import { createLogger, errorFields, stateDir } from "./log.js";
@@ -14,7 +16,7 @@ import { loadState } from "./state.js";
 const logger = createLogger({ module: "ocm.evidence" });
 
 const DAY_MS = 86_400_000;
-const DEFAULT_LOG = join(homedir(), ".local", "share", "opencode", "log", "opencode.log");
+const defaultLog = () => join(homedir(), ".local", "share", "opencode", "log", "opencode.log");
 
 /** Directory holding `<id>.out.jsonl` worker output files. */
 export function workersDir(): string {
@@ -37,7 +39,7 @@ function splitModel(model: string): [provider: string, id: string] {
 export function collectHits(
   opts: { logPath?: string; sinceMs?: number; now?: Date } = {},
 ): LimitHit[] {
-  const logPath = opts.logPath ?? DEFAULT_LOG;
+  const logPath = opts.logPath ?? defaultLog();
   const cutoff = (opts.now ?? new Date()).getTime() - (opts.sinceMs ?? 7 * DAY_MS);
   const hits: LimitHit[] = [];
   const sessions = new Map<string, string>();
@@ -97,8 +99,21 @@ export function collectHits(
       if (!sessionHit) continue;
       const model = sessions.get(sessionHit.session);
       if (!model) {
-        unattributed++;
-        logger.debug("evidence.session_unattributed", { session: sessionHit.session });
+        const provider = providerForKind(sessionHit.kind, sessionHit.raw);
+        if (!provider) {
+          unattributed++;
+          logger.debug("evidence.session_unattributed", { session: sessionHit.session });
+          continue;
+        }
+        sessionHits++;
+        hits.push({
+          ts: sessionHit.ts,
+          provider,
+          model: ANY_MODEL,
+          kind: sessionHit.kind,
+          resetAt: sessionHit.resetAt,
+          raw: sessionHit.raw,
+        });
         continue;
       }
       const [provider, id] = splitModel(model);

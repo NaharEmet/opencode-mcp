@@ -506,3 +506,100 @@ export function pick(opts: PickOptions): PickResult[] {
   }
   return ranked.map(({ id, pool, reason }) => ({ id, pool, reason }));
 }
+
+/** Spend window names and their length. */
+export const WINDOWS_MS = { "5h": 5 * 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000 } as const;
+export type WindowName = keyof typeof WINDOWS_MS | "total";
+
+export interface Spend {
+  runs: number;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export type SpendByPool = Record<string, Spend>;
+
+export interface BudgetStatus {
+  pool: string;
+  window: WindowName;
+  limitUsd: number;
+  spentUsd: number;
+  pct: number;
+  level: "ok" | "warn" | "over";
+}
+
+function emptySpend(): Spend {
+  return { runs: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+}
+
+function readDispatches(): DispatchRecord[] {
+  let raw: string;
+  try {
+    raw = readFileSync(dispatchesPath(), "utf8");
+  } catch {
+    return [];
+  }
+  const out: DispatchRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line) continue;
+    try {
+      out.push(JSON.parse(line) as DispatchRecord);
+    } catch {
+      logger.warn("ledger.dispatch_line_unreadable", { line: line.slice(0, 120) });
+    }
+  }
+  return out;
+}
+
+/** Runs, cost and tokens per pool for each window, from dispatches.jsonl. */
+export function spendSummary(now: Date = new Date()): Record<WindowName, SpendByPool> {
+  const windows: Record<WindowName, SpendByPool> = { "5h": {}, "24h": {}, "7d": {}, total: {} };
+  for (const rec of readDispatches()) {
+    const age = now.getTime() - Date.parse(rec.ts);
+    const pool = poolOf(rec.model);
+    for (const name of Object.keys(windows) as WindowName[]) {
+      if (name !== "total" && age > WINDOWS_MS[name]) continue;
+      windows[name][pool] ??= emptySpend();
+      const spend = windows[name][pool];
+      spend.runs += 1;
+      spend.costUsd += rec.costUsd;
+      spend.inputTokens += rec.tokens.input;
+      spend.outputTokens += rec.tokens.output;
+    }
+  }
+  return windows;
+}
+
+/**
+ * Parse OCM_BUDGETS ("go:5h:0.15,zai:7d:5") and compare each cap with the spend
+ * observed in that window. Malformed entries are logged and skipped.
+ */
+export function budgetStatus(
+  spend: Record<WindowName, SpendByPool>,
+  config: string | undefined = process.env.OCM_BUDGETS,
+): BudgetStatus[] {
+  const out: BudgetStatus[] = [];
+  for (const part of (config ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)) {
+    const [pool, window, limit] = part.split(":");
+    const limitUsd = Number(limit);
+    if (!pool || !(window in spend) || !(limitUsd > 0)) {
+      logger.warn("ledger.budget_entry_invalid", { entry: part });
+      continue;
+    }
+    const spentUsd = spend[window as WindowName][pool]?.costUsd ?? 0;
+    const pct = Math.round((spentUsd / limitUsd) * 100);
+    out.push({
+      pool,
+      window: window as WindowName,
+      limitUsd,
+      spentUsd,
+      pct,
+      level: pct >= 100 ? "over" : pct >= 80 ? "warn" : "ok",
+    });
+  }
+  return out;
+}

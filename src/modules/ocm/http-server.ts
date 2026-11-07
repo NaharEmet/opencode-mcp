@@ -14,10 +14,10 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { z } from "zod";
 import { jsonError, jsonResult } from "../shared/mcp-result.js";
 import { createLogger, errorFields, installCrashLogging } from "./log.js";
+import { VERSION } from "./version.js";
 
 const logger = createLogger({ module: "ocm.http-server" });
 const MAX_BODY_BYTES = 1024 * 1024;
-const VERSION = "1.3.1";
 const BEARER_PREFIX = "Bearer ";
 const MIN_TOKEN_CHARS = 16;
 const TOOL_DESCRIPTION =
