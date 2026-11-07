@@ -67,6 +67,8 @@ export interface DispatchRecord {
   difficulty?: 1 | 2 | 3 | 4;
   wallSec: number;
   costUsd: number;
+  /** LLM requests made (step_finish events); absent on older records. */
+  steps?: number;
   tokens: {
     input: number;
     output: number;
@@ -533,7 +535,7 @@ function emptySpend(): Spend {
   return { runs: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 };
 }
 
-function readDispatches(): DispatchRecord[] {
+export function readDispatches(): DispatchRecord[] {
   let raw: string;
   try {
     raw = readFileSync(dispatchesPath(), "utf8");

@@ -443,6 +443,29 @@ describe("budget", () => {
     expect(readLogs({ event: "tool.budget_threshold" })).toHaveLength(1);
   });
 
+  it("reports plan usage and warns when a plan is nearly spent", async () => {
+    process.env.OCM_LOG_LEVEL = "debug";
+    process.env.OCM_PLANS = "go:go";
+    recordDispatch({
+      worker: "b1",
+      ts: new Date().toISOString(),
+      model: "opencode-go/kimi-k3",
+      wallSec: 1,
+      costUsd: 0,
+      steps: 110,
+      tokens: { input: 1, output: 2, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+      outcome: "done",
+    });
+    const res = await call({ action: "budget" });
+    expect(res.plans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pool: "go", model: "kimi-k3", level: "over" }),
+      ]),
+    );
+    expect(readLogs({ event: "tool.plan_threshold" })).toHaveLength(1);
+    delete process.env.OCM_PLANS;
+  });
+
   it("lists a provider-wide block from an unattributed session line", async () => {
     writeFileSync(
       logFile,

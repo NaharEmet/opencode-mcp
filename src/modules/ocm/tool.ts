@@ -29,6 +29,7 @@ import {
 } from "./log.js";
 import { checkLaunchAllowed, type MemoryInfo, readMemory } from "./memory.js";
 import { appendEvent, psRows, readEvents, sweep, waitForEvents, workerResult } from "./monitor.js";
+import { planStatus } from "./pricing.js";
 import {
   adoptOrphans,
   defaultDeps,
@@ -225,6 +226,7 @@ function recordOnce(record: WorkerRecord, now: Date, verdict?: "pass" | "strike"
     difficulty: record.difficulty,
     wallSec: Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(record.startedAt)) / 1000)),
     costUsd: usage.costUsd,
+    steps: usage.steps,
     tokens: usage.tokens,
     outcome: hadLimitEvent(record.id) ? "limit" : (STATE_OUTCOME[record.state] ?? "done"),
     verdict,
@@ -489,11 +491,15 @@ function budgetAction(): ActionResult {
   }));
   const spend = spendSummary(now);
   const budgets = budgetStatus(spend);
+  const plans = planStatus(now);
   for (const budget of budgets.filter((b) => b.level !== "ok")) {
     logger.warn("tool.budget_threshold", { ...budget });
   }
+  for (const plan of plans.filter((p) => p.level !== "ok")) {
+    logger.warn("tool.plan_threshold", { ...plan });
+  }
   logger.debug("tool.budget", { blocks: blocks.length, budgets: budgets.length });
-  return { ok: true, blocks, spend, budgets, memory: readMemoryOrLog() };
+  return { ok: true, blocks, spend, budgets, plans, memory: readMemoryOrLog() };
 }
 
 function pickAction(req: Req): ActionResult {
